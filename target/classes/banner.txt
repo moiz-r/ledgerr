@@ -1,0 +1,13 @@
+
+  _                _                        
+ | |     ___    __| |  __ _   ___  _ __  _ __ 
+ | |    / _ \  / _` | / _` | / _ \| '__|| '__|
+ | |___|  __/ | (_| || (_| ||  __/| |   | |   
+ |_____|\___| \__,_| \__, | \___||_|   |_|   
+                      |___/                   
+                      
+  Production-Ready Double-Entry Ledger Service
+  
+  :: Spring Boot ::  ${spring-boot.version}
+  :: Profile     ::  ${spring.profiles.active}
+  

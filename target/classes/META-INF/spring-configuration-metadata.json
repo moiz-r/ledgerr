@@ -1,0 +1,102 @@
+{
+  "groups": [
+    {
+      "name": "ledgerr",
+      "type": "com.moiz.ledgerr.config.LedgerrProperties",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties"
+    },
+    {
+      "name": "ledgerr.outbox",
+      "type": "com.moiz.ledgerr.config.LedgerrProperties$Outbox",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties",
+      "sourceMethod": "getOutbox()"
+    },
+    {
+      "name": "ledgerr.reconciliation",
+      "type": "com.moiz.ledgerr.config.LedgerrProperties$Reconciliation",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties",
+      "sourceMethod": "getReconciliation()"
+    },
+    {
+      "name": "ledgerr.security",
+      "type": "com.moiz.ledgerr.config.LedgerrProperties$Security",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties",
+      "sourceMethod": "getSecurity()"
+    },
+    {
+      "name": "ledgerr.transaction",
+      "type": "com.moiz.ledgerr.config.LedgerrProperties$Transaction",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties",
+      "sourceMethod": "getTransaction()"
+    }
+  ],
+  "properties": [
+    {
+      "name": "ledgerr.outbox.batch-size",
+      "type": "java.lang.Integer",
+      "description": "Number of events to process per batch.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Outbox"
+    },
+    {
+      "name": "ledgerr.outbox.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether the outbox publisher is enabled.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Outbox"
+    },
+    {
+      "name": "ledgerr.outbox.max-retries",
+      "type": "java.lang.Integer",
+      "description": "Maximum retries for failed event publishing.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Outbox"
+    },
+    {
+      "name": "ledgerr.outbox.poll-interval-ms",
+      "type": "java.lang.Long",
+      "description": "Polling interval in milliseconds for unpublished events.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Outbox"
+    },
+    {
+      "name": "ledgerr.reconciliation.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether reconciliation processing is enabled.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Reconciliation"
+    },
+    {
+      "name": "ledgerr.reconciliation.match-window-hours",
+      "type": "java.lang.Integer",
+      "description": "Time window in hours for matching external transactions.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Reconciliation"
+    },
+    {
+      "name": "ledgerr.reconciliation.schedule-cron",
+      "type": "java.lang.String",
+      "description": "Cron expression for scheduled reconciliation runs.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Reconciliation"
+    },
+    {
+      "name": "ledgerr.security.request-hash-algorithm",
+      "type": "java.lang.String",
+      "description": "Algorithm used for request payload hashing (idempotency checks).",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Security"
+    },
+    {
+      "name": "ledgerr.transaction.max-entries-per-transaction",
+      "type": "java.lang.Integer",
+      "description": "Maximum number of ledger entries allowed per transaction. Prevents excessively large atomic operations.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Transaction"
+    },
+    {
+      "name": "ledgerr.transaction.max-retry-attempts",
+      "type": "java.lang.Integer",
+      "description": "Maximum retry attempts for optimistic locking conflicts.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Transaction"
+    },
+    {
+      "name": "ledgerr.transaction.retry-backoff-ms",
+      "type": "java.lang.Long",
+      "description": "Base backoff time in milliseconds between retries.",
+      "sourceType": "com.moiz.ledgerr.config.LedgerrProperties$Transaction"
+    }
+  ],
+  "hints": []
+}

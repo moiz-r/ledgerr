@@ -1,0 +1,230 @@
+# =====================================================
+# Ledgerr - Production-Ready Fintech Ledger Service
+# =====================================================
+# This configuration follows production best practices
+# with full Actuator and Prometheus integration.
+
+spring:
+  application:
+    name: ledgerr
+
+  # Default profile
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  # Jackson Configuration
+  jackson:
+    default-property-inclusion: non_null
+    serialization:
+      write-dates-as-timestamps: false
+      indent-output: false
+    deserialization:
+      fail-on-unknown-properties: false
+    time-zone: UTC
+
+  # Database Configuration
+  datasource:
+    url: ${DATABASE_URL:jdbc:h2:mem:ledgerr;DB_CLOSE_DELAY=-1;MODE=PostgreSQL}
+    username: ${DATABASE_USERNAME:sa}
+    password: ${DATABASE_PASSWORD:}
+    hikari:
+      pool-name: ledgerr-pool
+      maximum-pool-size: ${DATABASE_POOL_SIZE:10}
+      minimum-idle: 2
+      idle-timeout: 30000
+      connection-timeout: 20000
+      max-lifetime: 1800000
+      leak-detection-threshold: 60000
+      auto-commit: false
+
+  # JPA Configuration
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: validate  # Flyway handles migrations
+    open-in-view: false   # Best practice for production
+    properties:
+      hibernate:
+        format_sql: false
+        use_sql_comments: false
+        jdbc:
+          batch_size: 50
+          fetch_size: 50
+          batch_versioned_data: true
+        order_inserts: true
+        order_updates: true
+        generate_statistics: false
+        connection:
+          provider_disables_autocommit: true
+    show-sql: false
+
+  # Flyway Database Migrations
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration
+    validate-on-migrate: true
+    out-of-order: false
+    table: flyway_schema_history
+
+# =====================================================
+# Server Configuration
+# =====================================================
+server:
+  port: ${SERVER_PORT:8080}
+  shutdown: graceful
+  error:
+    include-message: always
+    include-binding-errors: always
+    include-stacktrace: never
+    include-exception: false
+  compression:
+    enabled: true
+    mime-types: application/json,application/xml,text/html,text/plain
+    min-response-size: 1024
+
+# =====================================================
+# Spring Boot Actuator Configuration
+# =====================================================
+# Exposes health, metrics, and monitoring endpoints
+# for production observability.
+
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}  # Separate port for management endpoints (security best practice)
+
+  endpoints:
+    web:
+      base-path: /actuator
+      exposure:
+        include:
+          - health
+          - info
+          - metrics
+          - prometheus
+          - env
+          - loggers
+          - httptrace
+          - flyway
+        exclude:
+          - shutdown
+
+  endpoint:
+    health:
+      show-details: when_authorized
+      show-components: when_authorized
+      probes:
+        enabled: true  # Kubernetes-style health probes
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState, db, diskSpace
+
+    prometheus:
+      enabled: true
+
+    info:
+      enabled: true
+
+    metrics:
+      enabled: true
+
+  # Health indicators
+  health:
+    db:
+      enabled: true
+    diskspace:
+      enabled: true
+      threshold: 10MB
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+  # Prometheus Metrics Configuration
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+        step: 30s
+        descriptions: true
+
+  # Micrometer Metrics Configuration
+  metrics:
+    enable:
+      all: true
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+      percentiles:
+        http.server.requests: 0.5, 0.75, 0.95, 0.99
+      slo:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s
+    tags:
+      application: ${spring.application.name}
+      environment: ${spring.profiles.active}
+
+  # Tracing (for future distributed tracing integration)
+  tracing:
+    enabled: false  # Enable when adding Zipkin/Jaeger
+
+# =====================================================
+# Application Info (exposed via /actuator/info)
+# =====================================================
+info:
+  app:
+    name: ${spring.application.name}
+    description: Production-ready double-entry ledger service for fintech
+    version: "1.0.0-SNAPSHOT"
+    encoding: "UTF-8"
+    java:
+      version: "22.0.2"
+  build:
+    artifact: "ledgerr"
+    group: "com.moiz"
+    time: "20260116-0242"
+
+# =====================================================
+# Logging Configuration
+# =====================================================
+logging:
+  level:
+    root: INFO
+    com.moiz.ledgerr: INFO
+    org.springframework.web: WARN
+    org.hibernate.SQL: WARN
+    org.flywaydb: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] [%X{traceId:-}] %-5level %logger{36} - %msg%n"
+
+# =====================================================
+# Ledgerr Custom Configuration
+# =====================================================
+ledgerr:
+  # Transaction settings
+  transaction:
+    max-entries-per-transaction: 100
+    max-retry-attempts: 3
+    retry-backoff-ms: 100
+
+  # Outbox publisher settings
+  outbox:
+    enabled: true
+    poll-interval-ms: 1000
+    batch-size: 100
+    max-retries: 5
+
+  # Reconciliation settings
+  reconciliation:
+    enabled: true
+    schedule-cron: "0 0 2 * * ?"  # Run at 2 AM daily
+    match-window-hours: 72
+
+  # Security settings
+  security:
+    request-hash-algorithm: SHA-256

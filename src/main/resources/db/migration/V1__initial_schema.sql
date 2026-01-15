@@ -1,0 +1,165 @@
+-- Ledgerr Core Schema
+-- V1: Initial schema for accounts, transactions, and ledger entries
+--
+-- This migration creates the foundational tables for the double-entry ledger.
+-- All amounts are stored in minor units (e.g., cents for USD) using BIGINT.
+
+-- =====================================================
+-- ACCOUNTS TABLE
+-- =====================================================
+-- Represents a bucket of value (wallet, revenue account, etc.)
+
+CREATE TABLE accounts (
+    id UUID PRIMARY KEY,
+    name TEXT NOT NULL,
+    asset_class TEXT NOT NULL CHECK (asset_class IN ('ASSET', 'LIABILITY', 'EQUITY', 'REVENUE', 'EXPENSE')),
+    currency TEXT NOT NULL,  -- ISO 4217 currency code
+    balance_posted BIGINT NOT NULL DEFAULT 0,  -- Denormalized posted balance (minor units)
+    balance_pending BIGINT NOT NULL DEFAULT 0, -- Denormalized pending balance
+    version INT NOT NULL DEFAULT 0,  -- Optimistic locking version
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Index for currency-based queries
+CREATE INDEX idx_accounts_currency ON accounts(currency);
+
+-- Index for asset class queries
+CREATE INDEX idx_accounts_asset_class ON accounts(asset_class);
+
+-- =====================================================
+-- TRANSACTIONS TABLE
+-- =====================================================
+-- Financial event wrapper containing metadata and status.
+
+CREATE TABLE transactions (
+    id UUID PRIMARY KEY,
+    reference_id TEXT UNIQUE NOT NULL,  -- Idempotency key
+    description TEXT,
+    status TEXT NOT NULL CHECK (status IN ('PENDING', 'POSTED', 'REJECTED', 'REVERSED')),
+    request_hash TEXT,  -- SHA-256 hash of original request for idempotency conflict detection
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    reversed_transaction_id UUID NULL REFERENCES transactions(id),
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Index for status-based queries
+CREATE INDEX idx_transactions_status ON transactions(status);
+
+-- Index for date-based queries
+CREATE INDEX idx_transactions_created_at ON transactions(created_at);
+
+-- =====================================================
+-- LEDGER ENTRIES TABLE
+-- =====================================================
+-- Atomic movements. Amount is always positive; direction indicates sign.
+
+CREATE TABLE ledger_entries (
+    id UUID PRIMARY KEY,
+    transaction_id UUID NOT NULL REFERENCES transactions(id),
+    account_id UUID NOT NULL REFERENCES accounts(id),
+    amount BIGINT NOT NULL CHECK (amount > 0),  -- Always positive, in minor units
+    direction TEXT NOT NULL CHECK (direction IN ('DEBIT', 'CREDIT')),
+    currency TEXT NOT NULL,  -- Denormalized for invariant checks & partitioning
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Index for transaction-based queries
+CREATE INDEX idx_ledger_entries_tx ON ledger_entries(transaction_id);
+
+-- Index for account statement queries (optimized for date range)
+CREATE INDEX idx_ledger_entries_acct ON ledger_entries(account_id, created_at);
+
+-- Index for currency-based queries
+CREATE INDEX idx_ledger_entries_currency ON ledger_entries(currency);
+
+-- =====================================================
+-- HOLDS TABLE
+-- =====================================================
+-- Holds/authorizations reserve funds without posting the final transfer.
+
+CREATE TABLE holds (
+    id UUID PRIMARY KEY,
+    reference_id TEXT UNIQUE NOT NULL,
+    account_id UUID NOT NULL REFERENCES accounts(id),
+    amount BIGINT NOT NULL CHECK (amount > 0),
+    currency TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'RELEASED', 'CAPTURED', 'EXPIRED')),
+    expires_at TIMESTAMP NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    capture_transaction_id UUID NULL REFERENCES transactions(id)
+);
+
+-- Index for account hold queries
+CREATE INDEX idx_holds_account_status ON holds(account_id, status);
+
+-- Index for expiry-based cleanup
+CREATE INDEX idx_holds_expires_at ON holds(expires_at) WHERE status = 'ACTIVE';
+
+-- =====================================================
+-- LEDGER EVENTS TABLE (Transactional Outbox)
+-- =====================================================
+-- Stores events to be published to message broker.
+-- Ensures atomic event creation with ledger changes.
+
+CREATE TABLE ledger_events (
+    id UUID PRIMARY KEY,
+    event_key TEXT UNIQUE NOT NULL,  -- Idempotency key for event consumers
+    aggregate_type TEXT NOT NULL,     -- 'TRANSACTION', 'ACCOUNT', 'HOLD'
+    aggregate_id UUID NOT NULL,
+    event_type TEXT NOT NULL,         -- 'TransactionPosted', 'TransactionRejected', etc.
+    payload JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    published_at TIMESTAMP NULL
+);
+
+-- Index for unpublished events (used by outbox publisher)
+CREATE INDEX idx_ledger_events_unpublished ON ledger_events(created_at) 
+    WHERE published_at IS NULL;
+
+-- =====================================================
+-- EXTERNAL TRANSACTIONS TABLE (Reconciliation)
+-- =====================================================
+-- Imported transactions from external providers for reconciliation.
+
+CREATE TABLE external_transactions (
+    id UUID PRIMARY KEY,
+    provider TEXT NOT NULL,          -- 'stripe', 'adyen', 'bank_xyz'
+    external_id TEXT NOT NULL,
+    occurred_at TIMESTAMP NOT NULL,
+    currency TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    type TEXT NOT NULL,              -- 'settlement', 'fee', 'chargeback'
+    raw JSONB NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE(provider, external_id)
+);
+
+-- Index for provider queries
+CREATE INDEX idx_external_transactions_provider ON external_transactions(provider, occurred_at);
+
+-- =====================================================
+-- RECONCILIATIONS TABLE
+-- =====================================================
+-- Tracks reconciliation results and resolution.
+
+CREATE TABLE reconciliations (
+    id UUID PRIMARY KEY,
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    internal_transaction_id UUID NULL REFERENCES transactions(id),
+    status TEXT NOT NULL CHECK (status IN (
+        'MATCHED', 'MISSING_INTERNAL', 'MISSING_EXTERNAL', 
+        'AMOUNT_MISMATCH', 'CURRENCY_MISMATCH', 'RESOLVED'
+    )),
+    diff_amount BIGINT NOT NULL DEFAULT 0,
+    notes TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    resolved_at TIMESTAMP NULL,
+    UNIQUE(provider, external_id)
+);
+
+-- Index for unresolved reconciliations
+CREATE INDEX idx_reconciliations_status ON reconciliations(status) 
+    WHERE status NOT IN ('MATCHED', 'RESOLVED');

@@ -1,0 +1,115 @@
+# =====================================================
+# Ledgerr - Production Profile Configuration
+# =====================================================
+# This profile is optimized for production deployment
+# with PostgreSQL, strict security, and performance tuning.
+
+spring:
+  # PostgreSQL Database (values from environment variables)
+  datasource:
+    url: ${DATABASE_URL}
+    username: ${DATABASE_USERNAME}
+    password: ${DATABASE_PASSWORD}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: ledgerr-prod-pool
+      maximum-pool-size: ${DATABASE_POOL_SIZE:20}
+      minimum-idle: 5
+      idle-timeout: 60000
+      connection-timeout: 30000
+      max-lifetime: 1800000
+      leak-detection-threshold: 120000
+      validation-timeout: 5000
+      connection-test-query: SELECT 1
+
+  # JPA strict production settings
+  jpa:
+    database-platform: org.hibernate.dialect.PostgreSQLDialect
+    hibernate:
+      ddl-auto: validate  # NEVER auto-create in production
+    show-sql: false
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: false
+        use_sql_comments: false
+        generate_statistics: false
+        jdbc:
+          batch_size: 100
+          fetch_size: 100
+
+  # Flyway migrations enabled
+  flyway:
+    enabled: true
+    baseline-on-migrate: false  # Strict in production
+    validate-on-migrate: true
+    clean-disabled: true  # NEVER allow clean in production
+
+  # Disable H2 console
+  h2:
+    console:
+      enabled: false
+
+# Production server settings
+server:
+  port: ${SERVER_PORT:8080}
+  tomcat:
+    max-threads: 200
+    min-spare-threads: 20
+    accept-count: 100
+    max-connections: 10000
+    connection-timeout: 20000
+  error:
+    include-stacktrace: never
+    include-exception: false
+
+# Management endpoints on separate port (security)
+management:
+  server:
+    port: ${MANAGEMENT_PORT:8081}
+
+  endpoints:
+    web:
+      exposure:
+        include:
+          - health
+          - info
+          - metrics
+          - prometheus
+          - flyway
+        exclude:
+          - env
+          - loggers
+          - httptrace
+          - shutdown
+          - heapdump
+          - threaddump
+
+  endpoint:
+    health:
+      show-details: when_authorized
+      show-components: when_authorized
+
+# Production logging (structured JSON recommended)
+logging:
+  level:
+    root: WARN
+    com.moiz.ledgerr: INFO
+    org.springframework.web: WARN
+    org.hibernate: WARN
+    org.flywaydb: INFO
+  pattern:
+    console: '{"timestamp":"%d{ISO8601}","level":"%p","thread":"%t","logger":"%logger","message":"%m","traceId":"%X{traceId:-}"}%n'
+
+# Production ledgerr settings
+ledgerr:
+  transaction:
+    max-retry-attempts: 5
+    retry-backoff-ms: 200
+
+  outbox:
+    poll-interval-ms: 500
+    batch-size: 200
+
+  reconciliation:
+    schedule-cron: "0 0 2 * * ?"  # 2 AM daily
