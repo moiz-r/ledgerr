@@ -1,4 +1,4 @@
-package com.moiz.ledgerr.controller;
+package com.moiz.ledgerr.interfaces;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
