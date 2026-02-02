@@ -61,6 +61,177 @@ A fintech cannot safely manage money using mutable “balance” columns and CRU
 
 ---
 
+## 3A. Product Layer Addendum: Digital Wallet PRD Expansion
+
+Ledgerr (this doc) is the **ledger core**. To make it a **digital wallet**, we add a product layer that:
+
+* defines what “wallet” means (custody, rails, geography)
+* exposes money movement primitives (cash-in/out, P2P, merchant payments)
+* adds identity/compliance, security/risk controls, UX flows, and operational requirements
+
+This section is intentionally PRD-oriented (capabilities, states, requirements) while reusing Ledgerr as the system of record.
+
+### 3A.1 Wallet Definition (Scope)
+
+**Wallet type (choose + document):**
+
+* Closed-loop: in-app only (no external rails)
+* Open-loop: card/bank rails supported
+* Hybrid: internal balance + external rails
+
+**Custody model (choose + document):**
+
+* Custodial: we (or a partner) hold user funds; wallet balance is real stored value
+* Non-custodial/pass-through: funds are never held; ledger models obligations and pending settlements
+
+**Geography + currency:**
+
+* Supported countries/regions
+* Supported currencies (ISO 4217)
+* Cross-border + FX requirements (phase-gated)
+
+**Money movement rails (now / next):**
+
+* Deposits/withdrawals: ACH, wire, RTP/FedNow, SEPA (if applicable)
+* Card: card funding, card payouts, chargebacks/refunds
+* Optional: cash networks, crypto (only if intentionally in scope)
+
+### 3A.2 Core Wallet Capabilities
+
+**Balances:**
+
+* `posted_balance`, `pending_balance` (optional), `held_amount`, `available_balance`
+* Holds: create/release/capture/expire; holds must reduce `available_balance`
+* Blocks: admin/risk blocks that reduce availability without rewriting history
+* Negative balance policy: explicitly define if/when allowed and recovery behavior
+
+**Funding sources:**
+
+* Add/verify bank account (micro-deposits, Plaid-like instant verification, or partner flow)
+* Add card (tokenized; avoid storing PAN)
+* Source lifecycle: added → verified → active → disabled
+
+**Cash-in / cash-out:**
+
+* Deposit initiation and settlement states
+* Withdrawals (standard vs instant), cutoffs, fees, limits
+* Return flows (ACH return / payout failure) modeled as compensating ledger events
+
+**P2P transfers:**
+
+* Send to handle/phone/email/contact, QR, or wallet address
+* Transfer states: initiated → pending → posted / failed → reversed
+* Cancellation policy (only before posting)
+* Recipient onboarding: pending recipient vs known user
+
+**Merchant payments (optional feature gate):**
+
+* Pay by QR, in-app checkout, or invoice-style request-to-pay
+* Virtual card (tokenized) backed by wallet balance (if in scope)
+
+**Receipts + statements:**
+
+* Receipts per transaction (merchant, fees, FX rate snapshot, metadata)
+* Monthly statements; export CSV
+* Notes/tags/categories (product-level metadata, not ledger mutation)
+
+**Limits + fees:**
+
+* Tiered limits per KYC level (per-transaction, daily, weekly)
+* Velocity controls for risk (count + amount windows)
+* Fee transparency: who pays, how fees are posted (separate entries), fee refunds
+
+### 3A.3 Transaction Lifecycle and Disputes
+
+**Lifecycle (wallet-level):**
+
+* Authorization (hold) → capture (posted) → refund (posted) → dispute/chargeback (posted) → representment (if modeled)
+
+**Disputes/chargebacks (if card rails are in scope):**
+
+* Dispute intake: evidence collection, deadlines
+* Provisional credit policy (explicit)
+* Chargeback posting rules (ledgered as separate transactions)
+
+### 3A.4 Identity, Trust, and Compliance (PRD Requirements)
+
+**KYC/KYB:**
+
+* Onboarding tiers (example): Tier 0 (unverified, view-only) → Tier 1 (basic, low limits) → Tier 2 (full, higher limits)
+* Verification triggers: first withdrawal, high velocity, profile change, risk signals
+
+**AML/sanctions posture:**
+
+* Screening at onboarding + on key events (beneficiary add, withdrawal, high-risk merchants)
+* Transaction monitoring signals (velocity, unusual patterns) feeding holds/blocks and support workflows
+
+**Data retention + privacy:**
+
+* Retention periods for identity data, transaction data, and logs
+* Deletion/anonymization policy (jurisdiction-dependent)
+
+### 3A.5 Security Model (Wallet Threats)
+
+**Threat model (minimum):** account takeover, SIM-swap, phishing, device theft, replay, insider access.
+
+**Controls:**
+
+* MFA / passkeys; step-up auth for high-risk actions (new withdrawal destination, large transfers)
+* Device binding and session controls (token rotation, refresh policies)
+* Webhook signature verification (for provider callbacks)
+* Immutable audit log for admin actions and risky user actions (separate from business ledger)
+
+### 3A.6 Money Integrity Requirements (Beyond the Ledger)
+
+**Idempotency contract:** every money-moving request requires a client-supplied idempotency key; conflicts must be deterministic.
+
+**Reconciliation:** keep this doc’s Phase 4 as a hard requirement for any external rail integration.
+
+**Settlement modeling:** explicitly model pending vs posted vs reversed for each rail; never “flip balances” without corresponding ledger events.
+
+### 3A.7 UX Flows (State-Complete)
+
+At minimum, specify happy path + failure states for:
+
+* Onboarding → KYC → first deposit → first transfer/payment → withdrawal
+* Failure modes: returned deposit, failed payout, KYC failed, limit hit, risk hold, dispute opened
+* In-app support: ticket creation, status tracking, evidence upload
+
+### 3A.8 Non-Functional Requirements (Wallet-Grade Ops)
+
+* Availability/SLOs for posting and balance reads; define degraded behaviors when providers are down
+* Consistency: which balance views must be strongly consistent vs eventually consistent
+* Observability: metrics for ledger drift, recon breaks, posting latency, fraud blocks, dispute rate
+* Incident response: runbooks for “balance incorrect”, “provider outage”, “fraud spike”, “recon mismatch surge”
+
+### 3A.9 Integrations and API Surface
+
+* Provider abstraction: webhook-driven state changes; retries/backoff; idempotent webhook handling
+* Public API hygiene: auth, pagination, versioning, idempotency headers, webhook signing
+* Admin console needs (even if mocked): manual holds/blocks, adjustment workflow with approvals, audit trail
+
+### 3A.10 Success Metrics
+
+**Activation:** KYC completion, first deposit, first spend/transfer.
+
+**Retention:** repeat transfers, balance-holding rate.
+
+**Risk:** fraud rate, chargeback rate, recon break rate, net loss rate.
+
+**Unit economics:** funding costs, fee revenue/interchange (if applicable), support cost per active user.
+
+### 3A.11 “Enhance My Learnings” (Deliberate Practice Additions)
+
+To make this PRD recruiter-grade and to deepen systems thinking, include:
+
+* 5–10 explicit tradeoffs (custodial vs pass-through, rails, consistency, limits)
+* A transaction state machine diagram (pending → posted → reversed/failed) per rail
+* A reconciliation spec: source of truth, matching strategy, and resolution via compensating entries
+* Sample journal entries for: deposit, withdrawal, P2P, refund, dispute/chargeback
+* A security + fraud playbook: concrete triggers for holds/blocks and step-up auth
+
+---
+
 ## 4. Key Concepts & Accounting Model
 
 ### 4.1 Invariants (“Must Never Break”)
