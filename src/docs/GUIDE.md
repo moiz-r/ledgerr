@@ -14,12 +14,14 @@ Package base: com.moiz.ledgerr
 ## 0. Prerequisites and Setup
 
 ### Skills checklist
+
 - Java basics: classes, records, enums, generics, collections
 - Spring basics: beans, dependency injection, @Configuration, @Service
 - Maven basics: mvn test, mvn spring-boot:run
 - SQL basics: tables, indexes, constraints, transactions
 
 ### Environment checklist
+
 - Java 22 installed
 - Maven installed
 - Postgres running locally
@@ -44,27 +46,44 @@ src/main/java/com/moiz/ledgerr/
 ## 1. Core Ledger Concepts (Read First)
 
 ### Why ledgers exist
+
 - Financial data must be immutable and auditable
 - Balances should be derived from ledger entries, not mutated in place
 - Every movement must be traceable to a transaction
 
 ### Double-entry accounting (non-negotiable)
+
 - Every transaction has at least two entries
 - For each currency: sum(debits) == sum(credits)
 - Entries are append-only (never updated or deleted)
 
+### How transactions interact with accounts (mental model)
+
+- `transactions` is the immutable "what happened" wrapper (reference_id, status, metadata)
+- `ledger_entries` are the immutable line items (which accounts changed)
+- `accounts` are buckets; cached balances change only by posting transactions
+
+Ledger entry invariants:
+
+- amount is always positive; sign is via direction (DEBIT/CREDIT)
+- per currency in a transaction: total debits == total credits
+- entry currency matches account currency (until explicit FX modeling exists)
+
 ### Idempotency
+
 - Clients retry requests; the ledger must not double-charge
 - A unique reference_id prevents duplicate postings
 - Same reference_id + different payload must return conflict
 
 ### Transaction lifecycle
+
 - PENDING: recorded, not settled
 - POSTED: finalized, affects balances
 - REJECTED: invalid request
 - REVERSED: corrected by compensating transaction
 
 What happens at each step:
+
 - PENDING: validate request, write transaction + entries as pending, do not change posted balances
 - POSTED: commit transaction + entries, update posted balances, emit outbox event
 - REJECTED: store transaction with failure reason, no balance changes, optional event for audit
@@ -90,6 +109,7 @@ Transaction lifecycle diagram:
 ```
 
 ### Fault-tolerance principles
+
 - Single DB transaction for posting (all-or-nothing)
 - Optimistic locking for concurrent writes
 - Outbox for reliable event publishing
@@ -103,25 +123,30 @@ This section is a practical checklist of patterns you will keep reusing while bu
 It is written as a reference you can come back to while implementing.
 
 ### 1) Treat the ledger as the source of truth (append-only)
+
 - Make `ledger_entries` immutable and append-only. Do not update or delete entries.
 - Corrections are modeled as new transactions (reversals / adjustments), not mutations.
 - Keep business objects (like “Order” or “Payment”) separate from accounting records.
 
 Reference:
+
 - Stripe: Ledger as an immutable log of events: https://stripe.com/blog/ledger-stripe-system-for-tracking-and-validating-money-movement
 - Modern Treasury: enforcing immutability and reversal strategies: https://www.moderntreasury.com/journal/enforcing-immutability-in-your-double-entry-ledger
 
 ### 2) Enforce invariants at write time
+
 - Zero-sum per currency for each transaction (sum(debits) == sum(credits)).
 - Amounts are stored in minor units (BIGINT/Long) and must be positive; direction is the sign.
 - Currency consistency: entry currency must match account currency (unless you explicitly model FX).
 - Idempotency: `reference_id` is unique and prevents duplicate financial effects.
 
 Recommended implementation shape:
+
 - A validator pipeline that runs before persistence.
 - DB constraints as a backstop (CHECKs, UNIQUE indexes, foreign keys).
 
 ### 3) One posting operation = one database transaction
+
 - The posting service method should be `@Transactional` and include:
   - insert transaction row
   - insert ledger entries
@@ -130,10 +155,12 @@ Recommended implementation shape:
 - If any step fails, everything rolls back.
 
 Spring Boot practice:
+
 - Put `@Transactional` on service-layer methods (not on controllers).
 - Keep the transactional method small and deterministic.
 
 ### 4) Concurrency control: optimistic locking first
+
 - Use optimistic locking (`@Version`) on `accounts` if you update denormalized balances.
 - Expect conflicts under load; handle them explicitly:
   - catch optimistic lock failures
@@ -141,9 +168,11 @@ Spring Boot practice:
   - cap retries and return a retriable error when exhausted
 
 Reference:
+
 - JPA optimistic locking with @Version: https://www.baeldung.com/jpa-optimistic-locking
 
 When optimistic locking is not enough:
+
 - Hot accounts (system revenue, clearing accounts) may require:
   - sharded system accounts, or
   - targeted pessimistic locks, or
@@ -152,52 +181,63 @@ When optimistic locking is not enough:
 ### 5) Isolation level strategy (Postgres)
 
 Why you care:
+
 - Posting is a classic “invariant-maintaining transaction”. Concurrency can violate invariants unless
   you use locking, optimistic retries, or a stricter isolation level.
 
 Practical choices:
+
 - Default Postgres isolation is `READ COMMITTED`.
 - For high-integrity posting paths you can choose stricter isolation (`REPEATABLE READ` or `SERIALIZABLE`),
   but you must be prepared to retry transactions when the database reports serialization failures.
 
 Reference:
+
 - Postgres isolation levels and the need to retry on serialization failure: https://www.postgresql.org/docs/current/transaction-iso.html
 
 Rule of thumb:
+
 - Start with optimistic locking + retries.
 - If you still see invariant breaks under concurrency, revisit: isolation, row locks, and data modeling.
 
 ### 6) Transactional outbox (reliability for event publishing)
 
 Problem:
+
 - “Dual write”: update database + publish message. Either can succeed while the other fails.
 
 Pattern:
+
 - Within the same DB transaction, write an outbox record.
 - A separate publisher job (polling) reads unpublished rows and publishes to your broker.
 - Mark published after successful publish.
 
 Important practice:
+
 - Assume the outbox publisher can publish the same event more than once.
 - Consumers must be idempotent (track event_key/message id).
 
 References:
+
 - Transactional outbox pattern (microservices.io): https://microservices.io/patterns/data/transactional-outbox.html
 - Spring discussion of outbox vs transaction synchronization caveats: https://spring.io/blog/2023/10/24/a-use-case-for-transactions-adapting-to-transactional-outbox-pattern
 
 ### 7) Idempotency everywhere (API + events)
+
 - API write endpoints require an idempotency key (`reference_id`).
 - Store a `request_hash` to detect “same key, different payload” conflicts.
 - For outbox events, use `event_key` unique constraint.
 - For consumers, keep a “processed events” store keyed by event_key.
 
 ### 8) Reconciliation as a first-class workflow
+
 - External processors and banks settle later and sometimes disagree.
 - Store raw external transactions as immutable records.
 - Reconciliation produces statuses (MATCHED, MISSING_INTERNAL, AMOUNT_MISMATCH, etc.).
 - Resolution writes compensating transactions; never mutate history.
 
 ### 9) Observability and auditability
+
 - Every transaction should carry metadata:
   - actor (user/admin/system)
   - correlation_id / trace_id
@@ -210,6 +250,7 @@ References:
   - reconciliation mismatch counts
 
 ### 10) Integrity checks and “drift detection” jobs
+
 - Nightly/periodic checks:
   - every posted transaction is zero-sum per currency
   - denormalized balances match sums of ledger entries
@@ -217,6 +258,7 @@ References:
 - Treat failures as incidents: you found a correctness bug.
 
 ### 11) Testing practices that matter for ledgers
+
 - Integration tests with real Postgres (Testcontainers): correctness lives at the DB boundary.
 - Concurrency tests: parallel postings against the same account.
 - Idempotency tests: same reference_id retried multiple times.
@@ -230,15 +272,18 @@ References:
 ## Module 1: Account Entity (Foundation)
 
 ### Theory
+
 An account is a bucket of value. It has an asset class and a currency.
 For wallets, treat accounts as **typed buckets** so each flow has a clear home
 for funds as they move through the system.
 
 Wallet modeling pattern:
+
 - `wallet_available`: spendable funds for a user
 - `wallet_pending`: funds waiting on settlement or release (clearing bucket)
 
 Why clearance is required:
+
 - Many flows are multi-step and async (deposit, withdrawal, chargeback). Funds
   must live in a deterministic bucket between steps.
 - Clearing buckets let you detect missing or incorrect events: a non-zero
@@ -246,18 +291,65 @@ Why clearance is required:
   that the flow did not complete or was keyed incorrectly.
 
 How this helps map flows:
+
 - Each step moves value between typed buckets (e.g., `wallet_pending` ->
   `wallet_available`). This makes the flow state explicit and auditable.
 - You can query clearing buckets to validate completeness and surface drift.
 
 Key ideas:
+
 - Use UUIDs for ids
 - Use BIGINT/Long for minor units (cents)
 - Use @Version for optimistic locking
 - Use ISO-4217 currency codes
 - Add `accountType` + `properties` to model typed buckets and per-flow instances
 
-### Snippets
+### What an account is (in a ledger)
+
+An account is a bucket of value. It is not "a user" and it is not "auth".
+Accounts are where ledger entries post debits/credits.
+
+Key properties:
+
+- `asset_class`: what kind of bucket this is (ASSET/LIABILITY/EQUITY/REVENUE/EXPENSE)
+- `currency`: accounts are single-currency (ISO-4217 like USD/EUR)
+- `balance_posted` / `balance_pending`: cached/denormalized for fast reads
+- `version`: optimistic locking if you update balances under concurrency
+
+### Perspective rule (important)
+
+The ledger is modeled from the platform/company perspective:
+
+- User wallet balances are typically LIABILITIES (the platform owes users).
+- Platform bank cash is typically an ASSET (the platform owns cash).
+
+### Asset classes, simply
+
+Asset classes exist so debit and credit have consistent meaning and reporting:
+
+- ASSET: what you own (cash, bank, receivables)
+- LIABILITY: what you owe (user balances, payables)
+- EQUITY: owners' claim (capital, retained earnings)
+- REVENUE: money earned (fees, spread)
+- EXPENSE: money spent (bank fees, chargeback costs)
+
+Normal balance behavior (common convention):
+
+- ASSET / EXPENSE: DEBIT increases, CREDIT decreases
+- LIABILITY / REVENUE / EQUITY: CREDIT increases, DEBIT decreases
+
+### Multi-currency rule
+
+- Enforce zero-sum per currency: for each transaction+currency bucket, sum(debits) == sum(credits)
+- Keep accounts single-currency
+- If you do FX (USD->EUR), model it explicitly (rate snapshot + FX accounts)
+
+### Should we store user info in accounts?
+
+No. Keep ledger accounts auth-agnostic.
+If you need ownership, store a lightweight reference (e.g., `owner_reference`).
+
+### Snippets (updated to BIGINT account ids)
 
 Asset class enum:
 
@@ -271,14 +363,14 @@ public enum AssetClass {
 }
 ```
 
-Account entity skeleton:
+Account entity skeleton (id is BIGINT):
 
 ```java
 @Entity
 @Table(name = "accounts")
 public class Account {
     @Id
-    private UUID id;
+    private Long id;
 
     private String name;
 
@@ -304,28 +396,35 @@ public class Account {
 ```
 
 ### Exercises
-- Create AssetClass enum in model
+
+- Create AssetClass enum
 - Create Account entity with JPA annotations
 - Add accountType + properties fields for wallet buckets
 - Add createdAt/updatedAt audit fields
 - Decide if you want Lombok @Data or explicit getters/setters
+- Decide account ownership strategy (no auth data in ledger; optional owner_reference)
+- Ensure account is single-currency and currency is ISO-4217
 
 ### Tests (descriptions only)
-- Persist account and verify fields are stored
+
+- Persist account and verify fields
 - Verify optimistic locking rejects stale updates
 - Validate asset class and currency constraints
 - Validate accountType + properties uniqueness per bucket
+- Validate currency format and asset class constraints
 
 ---
 
 ## Module 2: Transactions and Ledger Entries (Core Ledger)
 
 ### Theory
+
 A transaction is a container for multiple ledger entries.
 Ledger entries represent the atomic movements of value.
 Entries are immutable.
 
 Key ideas:
+
 - Direction is DEBIT or CREDIT
 - Amount is always positive
 - Zero-sum per currency is mandatory
@@ -392,7 +491,7 @@ public class LedgerEntry {
     private UUID id;
 
     private UUID transactionId;
-    private UUID accountId;
+    private Long accountId;
 
     private Long amount;
 
@@ -419,7 +518,47 @@ Transaction T1 (USD)
   Zero-sum: OK
 ```
 
+### Common scenarios (platform perspective)
+
+1. User deposit $100 USD (cash-in)
+
+- Platform Cash USD (ASSET): +100
+- User Wallet USD (LIABILITY): +100
+
+2. User withdrawal $40 USD (cash-out)
+
+- User Wallet USD (LIABILITY): -40
+- Platform Cash USD (ASSET): -40
+
+3. User-to-user transfer $25 USD (internal)
+
+- Sender Wallet USD (LIABILITY): -25
+- Receiver Wallet USD (LIABILITY): +25
+  Notes: platform assets do not change; total liabilities stay the same.
+
+4. Transfer with $1 fee charged to sender
+
+- Sender Wallet USD (LIABILITY): -26
+- Receiver Wallet USD (LIABILITY): +25
+- Fee Revenue (REVENUE): +1
+
+5. Platform pays a $3 bank fee
+
+- Bank Fees (EXPENSE): +3
+- Platform Cash USD (ASSET): -3
+
+6. Capital injection $1000
+
+- Platform Cash USD (ASSET): +1000
+- Paid-in Capital (EQUITY): +1000
+
+7. Owner distribution $200
+
+- Platform Cash USD (ASSET): -200
+- Equity / Distributions (EQUITY): -200
+
 ### Exercises
+
 - Create Direction and TransactionStatus enums
 - Create Transaction and LedgerEntry entities
 - Add constraints for amount > 0
@@ -427,6 +566,7 @@ Transaction T1 (USD)
 - Write a zero-sum validator (see Module 4)
 
 ### Tests (descriptions only)
+
 - Creating a transaction inserts entries
 - Zero-sum violation throws validation error
 - Idempotency key duplicates do not create double postings
@@ -436,10 +576,12 @@ Transaction T1 (USD)
 ## Module 3: Repository Layer (Data Access)
 
 ### Theory
+
 Spring Data JPA provides CRUD operations and query methods.
 Repositories should be thin and focused on data access.
 
 Key ideas:
+
 - JpaRepository for base CRUD
 - Custom finder methods via naming conventions
 - Locking for concurrency-sensitive reads
@@ -449,7 +591,7 @@ Key ideas:
 AccountRepository:
 
 ```java
-public interface AccountRepository extends JpaRepository<Account, UUID> {
+public interface AccountRepository extends JpaRepository<Account, Long> {
     List<Account> findByCurrency(String currency);
     List<Account> findByAssetClass(AssetClass assetClass);
     boolean existsByName(String name);
@@ -470,16 +612,18 @@ LedgerEntryRepository:
 ```java
 public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> {
     List<LedgerEntry> findByTransactionId(UUID transactionId);
-    List<LedgerEntry> findByAccountIdOrderByCreatedAtDesc(UUID accountId);
+    List<LedgerEntry> findByAccountIdOrderByCreatedAtDesc(Long accountId);
 }
 ```
 
 ### Exercises
+
 - Implement repository interfaces
 - Add custom query for account statement by date range
 - Add optimistic locking queries where needed
 
 ### Tests (descriptions only)
+
 - Repository CRUD basic test
 - Find by reference_id returns correct transaction
 - Statement query orders entries by timestamp
@@ -489,10 +633,12 @@ public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> 
 ## Module 4: Validation and Business Rules
 
 ### Theory
+
 Validation is the gatekeeper for ledger correctness.
 Use a validator layer to enforce invariants before persistence.
 
 Core invariants:
+
 - Zero-sum per currency
 - Currency consistency
 - Non-negative amounts
@@ -527,6 +673,7 @@ public class IdempotencyValidator {
 ```
 
 ### Exercises
+
 - Create custom exceptions in utils
 - Implement ZeroSumValidator
 - Implement CurrencyConsistencyValidator
@@ -534,6 +681,7 @@ public class IdempotencyValidator {
 - Implement RequestHashCalculator (SHA-256)
 
 ### Tests (descriptions only)
+
 - Zero-sum mismatch throws exception
 - Currency mismatch throws exception
 - Insufficient funds throws exception
@@ -544,10 +692,12 @@ public class IdempotencyValidator {
 ## Module 5: Holds and Authorizations (Mandatory)
 
 ### Theory
+
 Holds reserve funds without posting final transfer.
 Available balance = posted_balance - active_holds.
 
 Hold lifecycle:
+
 - ACTIVE: reserved
 - CAPTURED: converted to transaction
 - RELEASED: removed without posting
@@ -603,6 +753,7 @@ public class Hold {
 ```
 
 ### Exercises
+
 - Create HoldStatus enum and Hold entity
 - Build HoldRepository
 - Implement available balance calculation
@@ -610,6 +761,7 @@ public class Hold {
 - Implement hold capture logic
 
 ### Tests (descriptions only)
+
 - Active holds reduce available balance
 - Capture creates a posted transaction
 - Expired holds no longer affect balance
@@ -619,11 +771,13 @@ public class Hold {
 ## Module 6: Transactional Outbox and Reconciliation (Mandatory)
 
 ### Theory: Transactional Outbox
+
 Writing to a DB and publishing to a broker is a dual-write problem.
 The outbox pattern writes events in the same DB transaction as ledger updates.
 Then a background job publishes them later.
 
 Benefits:
+
 - No lost events
 - No phantom events
 - Guaranteed eventual delivery
@@ -651,6 +805,7 @@ Outbox Publisher
 ```
 
 ### Theory: Reconciliation
+
 External processors may differ from your ledger due to delays, fees, and errors.
 Reconciliation detects mismatches and resolves them with compensating transactions.
 
@@ -749,6 +904,7 @@ public class Reconciliation {
 ```
 
 ### Exercises
+
 - Create LedgerEvent entity and repository
 - Create outbox publisher job (scheduler)
 - Create ExternalTransaction entity and repository
@@ -757,6 +913,7 @@ public class Reconciliation {
 - Build compensating transaction creator
 
 ### Tests (descriptions only)
+
 - Outbox events are created within posting transaction
 - Outbox publisher marks events as published
 - Reconciliation detects mismatches correctly
@@ -770,6 +927,7 @@ All posting must happen in a single DB transaction.
 If any step fails, nothing is committed.
 
 Steps:
+
 1. Validate request
 2. Check idempotency
 3. Load accounts (with optimistic locking)
@@ -784,21 +942,25 @@ Steps:
 ## Testing Strategy
 
 ### Unit tests (fast)
+
 - Validators: zero-sum, currency consistency, sufficient funds
 - Idempotency conflict detection
 - Request hash calculator
 
 ### Integration tests (real DB)
+
 - Post transaction end-to-end
 - Optimistic locking under concurrency
 - Outbox publisher job
 - Reconciliation flow
 
 ### Concurrency tests
+
 - Parallel debits on same account
 - Ensure no double-spend
 
 ### Property-based tests
+
 - Random entry sets always satisfy or reject zero-sum
 
 ---
