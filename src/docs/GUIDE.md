@@ -53,6 +53,16 @@ src/main/java/com/moiz/ledgerr/
 - For each currency: sum(debits) == sum(credits)
 - Entries are append-only (never updated or deleted)
 
+### How transactions interact with accounts (mental model)
+- `transactions` is the immutable "what happened" wrapper (reference_id, status, metadata)
+- `ledger_entries` are the immutable line items (which accounts changed)
+- `accounts` are buckets; cached balances change only by posting transactions
+
+Ledger entry invariants:
+- amount is always positive; sign is via direction (DEBIT/CREDIT)
+- per currency in a transaction: total debits == total credits
+- entry currency matches account currency (until explicit FX modeling exists)
+
 ### Idempotency
 - Clients retry requests; the ledger must not double-charge
 - A unique reference_id prevents duplicate postings
@@ -229,19 +239,44 @@ References:
 
 ## Module 1: Account Entity (Foundation)
 
-### Theory
-An account is a bucket of value. It has an asset class and a currency.
-We store balances as denormalized fields for fast reads, but the ledger
-remains the source of truth.
+### What an account is (in a ledger)
+An account is a bucket of value. It is not "a user" and it is not "auth".
+Accounts are where ledger entries post debits/credits.
 
-Key ideas:
-- Use UUIDs for ids
-- Use BIGINT/Long for minor units (cents)
-- Use @Version for optimistic locking
-- Use ISO-4217 currency codes
+Key properties:
+- `asset_class`: what kind of bucket this is (ASSET/LIABILITY/EQUITY/REVENUE/EXPENSE)
+- `currency`: accounts are single-currency (ISO-4217 like USD/EUR)
+- `balance_posted` / `balance_pending`: cached/denormalized for fast reads
+- `version`: optimistic locking if you update balances under concurrency
 
-### Snippets
+### Perspective rule (important)
+The ledger is modeled from the platform/company perspective:
+- User wallet balances are typically LIABILITIES (the platform owes users).
+- Platform bank cash is typically an ASSET (the platform owns cash).
 
+### Asset classes, simply
+Asset classes exist so debit and credit have consistent meaning and reporting:
+
+- ASSET: what you own (cash, bank, receivables)
+- LIABILITY: what you owe (user balances, payables)
+- EQUITY: owners' claim (capital, retained earnings)
+- REVENUE: money earned (fees, spread)
+- EXPENSE: money spent (bank fees, chargeback costs)
+
+Normal balance behavior (common convention):
+- ASSET / EXPENSE: DEBIT increases, CREDIT decreases
+- LIABILITY / REVENUE / EQUITY: CREDIT increases, DEBIT decreases
+
+### Multi-currency rule
+- Enforce zero-sum per currency: for each transaction+currency bucket, sum(debits) == sum(credits)
+- Keep accounts single-currency
+- If you do FX (USD->EUR), model it explicitly (rate snapshot + FX accounts)
+
+### Should we store user info in accounts?
+No. Keep ledger accounts auth-agnostic.
+If you need ownership, store a lightweight reference (e.g., `owner_reference`).
+
+### Snippets (updated to BIGINT account ids)
 Asset class enum:
 
 ```java
@@ -254,14 +289,14 @@ public enum AssetClass {
 }
 ```
 
-Account entity skeleton:
+Account entity skeleton (id is BIGINT):
 
 ```java
 @Entity
 @Table(name = "accounts")
 public class Account {
     @Id
-    private UUID id;
+    private Long id;
 
     private String name;
 
@@ -282,15 +317,15 @@ public class Account {
 ```
 
 ### Exercises
-- Create AssetClass enum in model
+- Create AssetClass enum
 - Create Account entity with JPA annotations
-- Add createdAt/updatedAt audit fields
-- Decide if you want Lombok @Data or explicit getters/setters
+- Decide account ownership strategy (no auth data in ledger; optional owner_reference)
+- Ensure account is single-currency and currency is ISO-4217
 
 ### Tests (descriptions only)
-- Persist account and verify fields are stored
+- Persist account and verify fields
 - Verify optimistic locking rejects stale updates
-- Validate asset class and currency constraints
+- Validate currency format and asset class constraints
 
 ---
 
@@ -368,7 +403,7 @@ public class LedgerEntry {
     private UUID id;
 
     private UUID transactionId;
-    private UUID accountId;
+    private Long accountId;
 
     private Long amount;
 
@@ -394,6 +429,38 @@ Transaction T1 (USD)
   Credits total: 1050
   Zero-sum: OK
 ```
+
+### Common scenarios (platform perspective)
+
+1) User deposit $100 USD (cash-in)
+- Platform Cash USD (ASSET): +100
+- User Wallet USD (LIABILITY): +100
+
+2) User withdrawal $40 USD (cash-out)
+- User Wallet USD (LIABILITY): -40
+- Platform Cash USD (ASSET): -40
+
+3) User-to-user transfer $25 USD (internal)
+- Sender Wallet USD (LIABILITY): -25
+- Receiver Wallet USD (LIABILITY): +25
+Notes: platform assets do not change; total liabilities stay the same.
+
+4) Transfer with $1 fee charged to sender
+- Sender Wallet USD (LIABILITY): -26
+- Receiver Wallet USD (LIABILITY): +25
+- Fee Revenue (REVENUE): +1
+
+5) Platform pays a $3 bank fee
+- Bank Fees (EXPENSE): +3
+- Platform Cash USD (ASSET): -3
+
+6) Capital injection $1000
+- Platform Cash USD (ASSET): +1000
+- Paid-in Capital (EQUITY): +1000
+
+7) Owner distribution $200
+- Platform Cash USD (ASSET): -200
+- Equity / Distributions (EQUITY): -200
 
 ### Exercises
 - Create Direction and TransactionStatus enums
@@ -425,7 +492,7 @@ Key ideas:
 AccountRepository:
 
 ```java
-public interface AccountRepository extends JpaRepository<Account, UUID> {
+public interface AccountRepository extends JpaRepository<Account, Long> {
     List<Account> findByCurrency(String currency);
     List<Account> findByAssetClass(AssetClass assetClass);
     boolean existsByName(String name);
@@ -446,7 +513,7 @@ LedgerEntryRepository:
 ```java
 public interface LedgerEntryRepository extends JpaRepository<LedgerEntry, UUID> {
     List<LedgerEntry> findByTransactionId(UUID transactionId);
-    List<LedgerEntry> findByAccountIdOrderByCreatedAtDesc(UUID accountId);
+    List<LedgerEntry> findByAccountIdOrderByCreatedAtDesc(Long accountId);
 }
 ```
 
