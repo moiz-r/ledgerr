@@ -231,14 +231,31 @@ References:
 
 ### Theory
 An account is a bucket of value. It has an asset class and a currency.
-We store balances as denormalized fields for fast reads, but the ledger
-remains the source of truth.
+For wallets, treat accounts as **typed buckets** so each flow has a clear home
+for funds as they move through the system.
+
+Wallet modeling pattern:
+- `wallet_available`: spendable funds for a user
+- `wallet_pending`: funds waiting on settlement or release (clearing bucket)
+
+Why clearance is required:
+- Many flows are multi-step and async (deposit, withdrawal, chargeback). Funds
+  must live in a deterministic bucket between steps.
+- Clearing buckets let you detect missing or incorrect events: a non-zero
+  `wallet_pending` balance for a specific flow instance is an immediate signal
+  that the flow did not complete or was keyed incorrectly.
+
+How this helps map flows:
+- Each step moves value between typed buckets (e.g., `wallet_pending` ->
+  `wallet_available`). This makes the flow state explicit and auditable.
+- You can query clearing buckets to validate completeness and surface drift.
 
 Key ideas:
 - Use UUIDs for ids
 - Use BIGINT/Long for minor units (cents)
 - Use @Version for optimistic locking
 - Use ISO-4217 currency codes
+- Add `accountType` + `properties` to model typed buckets and per-flow instances
 
 ### Snippets
 
@@ -265,6 +282,11 @@ public class Account {
 
     private String name;
 
+    private String accountType;
+
+    @Column(columnDefinition = "jsonb")
+    private String properties;
+
     @Enumerated(EnumType.STRING)
     private AssetClass assetClass;
 
@@ -284,6 +306,7 @@ public class Account {
 ### Exercises
 - Create AssetClass enum in model
 - Create Account entity with JPA annotations
+- Add accountType + properties fields for wallet buckets
 - Add createdAt/updatedAt audit fields
 - Decide if you want Lombok @Data or explicit getters/setters
 
@@ -291,6 +314,7 @@ public class Account {
 - Persist account and verify fields are stored
 - Verify optimistic locking rejects stale updates
 - Validate asset class and currency constraints
+- Validate accountType + properties uniqueness per bucket
 
 ---
 
