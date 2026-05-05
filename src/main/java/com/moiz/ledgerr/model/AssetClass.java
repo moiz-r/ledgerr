@@ -1,4 +1,4 @@
-package com.moiz.ledgerr.domain;
+package com.moiz.ledgerr.model;
 
 public enum AssetClass {
     ASSET,

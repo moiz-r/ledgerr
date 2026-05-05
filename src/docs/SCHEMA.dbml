@@ -1,0 +1,186 @@
+Project ledgerr {
+  database_type: "PostgreSQL"
+  Note: '''
+    Paste this file into dbdiagram.io.
+
+    Design notes:
+    - Current Java models use BIGINT ids and the table name ledger_transactions.
+    - Amounts are stored in minor units.
+    - Ledger entries are append-only; reversals are separate transactions.
+    - Zero-sum per transaction and currency is enforced by application validation.
+  '''
+}
+
+Enum asset_class {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+Enum transaction_status {
+  PENDING
+  POSTED
+  REJECTED
+  REVERSED
+}
+
+Enum entry_direction {
+  DEBIT
+  CREDIT
+}
+
+Enum hold_status {
+  ACTIVE
+  RELEASED
+  CAPTURED
+  EXPIRED
+}
+
+Enum reconciliation_status {
+  MATCHED
+  MISSING_INTERNAL
+  MISSING_EXTERNAL
+  AMOUNT_MISMATCH
+  CURRENCY_MISMATCH
+  RESOLVED
+}
+
+Table accounts {
+  id bigint [pk, increment]
+  name text [not null]
+  asset_class asset_class [not null]
+  currency varchar(3) [not null, note: "ISO 4217 currency code"]
+  balance_posted bigint [not null, default: 0, note: "Denormalized posted balance in minor units"]
+  balance_pending bigint [not null, default: 0, note: "Denormalized pending balance in minor units"]
+  account_type text [note: "Wallet bucket type, e.g. wallet_available, wallet_pending, platform_cash, fee_revenue"]
+  owner_reference text [note: "External owner reference only; do not store auth/user profile data here"]
+  properties jsonb [not null, default: '{}', note: "Optional bucket metadata from the guide"]
+  version int [not null, default: 0, note: "Optimistic locking version"]
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    currency [name: "idx_accounts_currency"]
+    asset_class [name: "idx_accounts_asset_class"]
+    (owner_reference, account_type, currency) [name: "idx_accounts_owner_type_currency"]
+  }
+}
+
+Table ledger_transactions {
+  id bigint [pk, increment]
+  reference_id text [not null, unique, note: "Client idempotency key"]
+  description text
+  status transaction_status [not null]
+  request_hash text [note: "Canonical request hash for idempotency conflict detection"]
+  metadata jsonb [not null, default: '{}']
+  reversed_transaction_id bigint [note: "Original transaction reversed by this transaction"]
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    reference_id [unique, name: "ux_ledger_transactions_reference_id"]
+    status [name: "idx_ledger_transactions_status"]
+    created_at [name: "idx_ledger_transactions_created_at"]
+    reversed_transaction_id [name: "idx_ledger_transactions_reversed_transaction_id"]
+  }
+}
+
+Table ledger_entries {
+  id bigint [pk, increment]
+  transaction_id bigint [not null]
+  account_id bigint [not null]
+  amount bigint [not null, note: "Positive amount in minor units"]
+  direction entry_direction [not null]
+  currency varchar(3) [not null, note: "Denormalized for invariant checks and partitioning"]
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    transaction_id [name: "idx_ledger_entries_tx"]
+    (account_id, created_at) [name: "idx_ledger_entries_acct_created_at"]
+    currency [name: "idx_ledger_entries_currency"]
+  }
+}
+
+Table holds {
+  id bigint [pk, increment]
+  reference_id text [not null, unique, note: "Idempotency key for the hold"]
+  account_id bigint [not null]
+  amount bigint [not null, note: "Positive amount in minor units"]
+  currency varchar(3) [not null]
+  status hold_status [not null]
+  expires_at timestamp [not null]
+  capture_transaction_id bigint [note: "Posted transaction created when the hold is captured"]
+  created_at timestamp [not null, default: `now()`]
+  updated_at timestamp [not null, default: `now()`]
+
+  indexes {
+    reference_id [unique, name: "ux_holds_reference_id"]
+    (account_id, status) [name: "idx_holds_account_status"]
+    expires_at [name: "idx_holds_expires_at"]
+  }
+}
+
+Table ledger_events {
+  id bigint [pk, increment]
+  event_key text [not null, unique, note: "Idempotency key for downstream consumers"]
+  aggregate_type text [not null, note: "TRANSACTION, ACCOUNT, HOLD, RECONCILIATION"]
+  aggregate_id bigint [not null]
+  event_type text [not null, note: "TransactionPosted, TransactionRejected, ReconciliationResolved, etc."]
+  payload jsonb [not null]
+  created_at timestamp [not null, default: `now()`]
+  published_at timestamp
+
+  indexes {
+    event_key [unique, name: "ux_ledger_events_event_key"]
+    (published_at, created_at) [name: "idx_ledger_events_publish_queue"]
+  }
+}
+
+Table external_transactions {
+  id bigint [pk, increment]
+  provider text [not null, note: "External provider, e.g. stripe, adyen, bank_xyz"]
+  external_id text [not null]
+  occurred_at timestamp [not null]
+  currency varchar(3) [not null]
+  amount bigint [not null, note: "External amount in minor units; sign follows provider feed semantics"]
+  type text [not null, note: "settlement, fee, chargeback, payout, return, adjustment"]
+  raw jsonb [not null, note: "Immutable raw provider payload"]
+  created_at timestamp [not null, default: `now()`]
+
+  indexes {
+    (provider, external_id) [unique, name: "ux_external_transactions_provider_external_id"]
+    (provider, occurred_at) [name: "idx_external_transactions_provider_occurred_at"]
+  }
+}
+
+Table reconciliations {
+  id bigint [pk, increment]
+  provider text [not null]
+  external_id text [not null]
+  external_transaction_id bigint
+  internal_transaction_id bigint
+  status reconciliation_status [not null]
+  diff_amount bigint [not null, default: 0]
+  notes text
+  resolution_transaction_id bigint [note: "Compensating transaction created to resolve the mismatch"]
+  created_at timestamp [not null, default: `now()`]
+  resolved_at timestamp
+
+  indexes {
+    (provider, external_id) [unique, name: "ux_reconciliations_provider_external_id"]
+    status [name: "idx_reconciliations_status"]
+    internal_transaction_id [name: "idx_reconciliations_internal_transaction_id"]
+    external_transaction_id [name: "idx_reconciliations_external_transaction_id"]
+  }
+}
+
+Ref: ledger_entries.transaction_id > ledger_transactions.id
+Ref: ledger_entries.account_id > accounts.id
+Ref: ledger_transactions.reversed_transaction_id > ledger_transactions.id
+Ref: holds.account_id > accounts.id
+Ref: holds.capture_transaction_id > ledger_transactions.id
+Ref: reconciliations.external_transaction_id > external_transactions.id
+Ref: reconciliations.internal_transaction_id > ledger_transactions.id
+Ref: reconciliations.resolution_transaction_id > ledger_transactions.id

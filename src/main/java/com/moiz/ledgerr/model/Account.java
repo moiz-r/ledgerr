@@ -1,4 +1,4 @@
-package com.moiz.ledgerr.domain;
+package com.moiz.ledgerr.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
@@ -13,11 +13,17 @@ import jakarta.persistence.Table;
 import jakarta.persistence.Version;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 import java.time.Instant;
 
 @Entity
 @Table(name = "accounts")
+@Getter
+@Setter
+@NoArgsConstructor
 public class Account {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -42,6 +48,12 @@ public class Account {
     @Column(name = "balance_pending", nullable = false)
     private long balancePending;
 
+    @Column(name = "account_type")
+    private String accountType;
+
+    @Column(name = "owner_reference", nullable = false)
+    private String ownerReference;
+
     @Version
     @Column(nullable = false)
     private int version;
@@ -52,13 +64,26 @@ public class Account {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    public Account() {
-    }
-
     public Account(String name, AssetClass assetClass, String currency) {
         this.name = name;
         this.assetClass = assetClass;
         this.currency = currency;
+    }
+
+    public void applyPosted(Direction direction, long amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("amount must be positive");
+        }
+
+        int sign = direction == normalIncreaseDirection() ? 1 : -1;
+        balancePosted += sign * amount;
+    }
+
+    private Direction normalIncreaseDirection() {
+        return switch (assetClass) {
+            case ASSET, EXPENSE -> Direction.DEBIT;
+            case LIABILITY, EQUITY, REVENUE -> Direction.CREDIT;
+        };
     }
 
     @PrePersist
@@ -73,77 +98,5 @@ public class Account {
     @PreUpdate
     void onUpdate() {
         updatedAt = Instant.now();
-    }
-
-    public Long getId() {
-        return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-
-    public AssetClass getAssetClass() {
-        return assetClass;
-    }
-
-    public void setAssetClass(AssetClass assetClass) {
-        this.assetClass = assetClass;
-    }
-
-    public String getCurrency() {
-        return currency;
-    }
-
-    public void setCurrency(String currency) {
-        this.currency = currency;
-    }
-
-    public long getBalancePosted() {
-        return balancePosted;
-    }
-
-    public void setBalancePosted(long balancePosted) {
-        this.balancePosted = balancePosted;
-    }
-
-    public long getBalancePending() {
-        return balancePending;
-    }
-
-    public void setBalancePending(long balancePending) {
-        this.balancePending = balancePending;
-    }
-
-    public int getVersion() {
-        return version;
-    }
-
-    public void setVersion(int version) {
-        this.version = version;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public void setCreatedAt(Instant createdAt) {
-        this.createdAt = createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
-    }
-
-    public void setUpdatedAt(Instant updatedAt) {
-        this.updatedAt = updatedAt;
     }
 }
